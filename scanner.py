@@ -47,8 +47,31 @@ app.configure(fg_color=COLORS["bg_dark"])
 # ---------------------------------------------------------------------------
 # Phone number scanner logic
 # ---------------------------------------------------------------------------
+def get_caller_name(e164_number):
+    """Try to get owner/caller name (CNAM). Works best for US numbers via FreeCNAM."""
+    try:
+        digits = "".join(c for c in e164_number if c.isdigit())
+        if not digits:
+            return None
+        # FreeCNAM expects US 10-digit (no country code)
+        if digits.startswith("1") and len(digits) == 11:
+            q = digits[1:]
+        elif len(digits) >= 10:
+            q = digits[-10:] if len(digits) > 10 else digits
+        else:
+            q = digits
+        r = requests.get("https://freecnam.org/dip", params={"q": q}, timeout=5)
+        r.raise_for_status()
+        name = (r.text or "").strip()
+        if name and name.lower() not in ("", "unknown", "unavailable"):
+            return name[:50]  # CNAM is typically 15 chars, allow a bit more
+    except Exception:
+        pass
+    return None
+
+
 def scan_phone_number(number_str, default_region="US"):
-    """Look up phone number: region, carrier, timezone, validation."""
+    """Look up phone number: region, carrier, timezone, validation, owner name."""
     result = {}
     try:
         parsed = phonenumbers.parse(number_str, default_region)
@@ -87,6 +110,8 @@ def scan_phone_number(number_str, default_region="US"):
             result["timezone"] = ", ".join(tz) if tz else "—"
         except Exception:
             result["timezone"] = "—"
+        # Owner / Caller ID (CNAM) - fetched separately, often US only
+        result["owner_name"] = get_caller_name(result["format_e164"]) or "—"
         return result
     except phonenumbers.NumberParseException as e:
         return {"error": str(e)}
@@ -120,6 +145,8 @@ def show_phone_result(info):
         return
     phone_status.configure(text="Scan complete", text_color=COLORS["success"])
     lines = [
+        f"Owner / Caller ID:  {info.get('owner_name', '—')}",
+        "",
         f"Valid:        {info['valid']}",
         f"Possible:     {info['possible']}",
         f"Type:         {info['type_name']}",
@@ -311,6 +338,9 @@ net_tab.configure(fg_color=COLORS["bg_dark"])
 net_input_frame = CTkFrame(net_tab, fg_color=COLORS["bg_card"], corner_radius=10, border_width=1, border_color=COLORS["text_dim"])
 net_input_frame.pack(fill="x", padx=20, pady=(20, 12))
 
+# Hint: Npcap needed for MAC/ARP scan on Windows
+CTkLabel(net_input_frame, text="💡 For MAC/ARP scan install Npcap (WinPcap replacement). See README.",
+         font=("Segoe UI", 10), text_color=COLORS["text_dim"]).pack(anchor="w", padx=16, pady=(8, 0))
 CTkLabel(net_input_frame, text="IP range", font=("Segoe UI", 12, "bold"), text_color=COLORS["text"]).pack(anchor="w", padx=16, pady=(12, 4))
 network_entry = CTkEntry(net_input_frame, placeholder_text="e.g. 192.168.1.0/24", height=36, font=("Consolas", 12),
                          fg_color=COLORS["bg_dark"], border_color=COLORS["accent"])

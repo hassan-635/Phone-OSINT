@@ -17,6 +17,7 @@ A desktop tool for **network scanning** and **phone number lookup** (OSINT), bui
 
 ### Phone Number Scanner
 - Look up any phone number (with country code)
+- **Owner / Caller ID** (CNAM; works best for US numbers via FreeCNAM)
 - **Region**, **carrier**, **location**, **timezone**
 - Number type (mobile, fixed line, VOIP, etc.)
 - Validation and formats (National, International, E.164)
@@ -27,6 +28,22 @@ A desktop tool for **network scanning** and **phone number lookup** (OSINT), bui
 
 - **Windows** (uses `pywin32` for window sizing)
 - Python 3.8+
+- **Npcap** (for Network Scanner: MAC address, ARP, etc.) ? see below.
+
+---
+
+## Npcap (Windows) ? for Network Scanner
+
+Scapy needs a packet capture driver. **WinPcap** is outdated; use **Npcap**:
+
+1. Download **Npcap** (Windows):  
+   https://npcap.com/#download  
+   Use the installer that matches your Windows (e.g. `npcap-1.79.exe`).
+2. Run the installer. Optionally check **"Install Npcap in WinPcap API-compatible Mode"** so Scapy can use it.
+3. Restart the PC or at least restart the app after installing.
+4. If you see *"No libpcap provider available"* when running `python scanner.py`, Npcap is not installed or not in use ? install or repair Npcap and try again.
+
+Without Npcap, the app still runs but network scan (MAC, ARP) may fail or be limited.
 
 ---
 
