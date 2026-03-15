@@ -54,6 +54,19 @@ app.configure(fg_color=COLORS["bg_dark"])
 # ---------------------------------------------------------------------------
 # Phone number scanner logic
 # ---------------------------------------------------------------------------
+def geocode_location(location_text):
+    """Convert location string (e.g. 'California, USA') to (lat, lng) or (None, None)."""
+    if not location_text or location_text == "—":
+        return None, None
+    try:
+        g = geocoder.osm(location_text)
+        if g and g.latlng and len(g.latlng) >= 2:
+            return float(g.latlng[0]), float(g.latlng[1])
+    except Exception:
+        pass
+    return None, None
+
+
 def get_caller_name(e164_number):
     """Try to get owner/caller name (CNAM). Works best for US numbers via FreeCNAM."""
     try:
@@ -119,6 +132,8 @@ def scan_phone_number(number_str, default_region="US"):
             result["timezone"] = "—"
         # Owner / Caller ID (CNAM) - fetched separately, often US only
         result["owner_name"] = get_caller_name(result["format_e164"]) or "—"
+        # Geocode location text to latitude/longitude for map
+        result["latitude"], result["longitude"] = geocode_location(result["location"])
         return result
     except phonenumbers.NumberParseException as e:
         return {"error": str(e)}
@@ -151,6 +166,9 @@ def show_phone_result(info):
         phone_results_frame.insert("end", f"Parse error: {info['error']}\n")
         return
     phone_status.configure(text="Scan complete", text_color=COLORS["success"])
+    lat, lng = info.get("latitude"), info.get("longitude")
+    lat_str = f"{lat:.5f}" if lat is not None else "—"
+    lng_str = f"{lng:.5f}" if lng is not None else "—"
     lines = [
         f"Owner / Caller ID:  {info.get('owner_name', '—')}",
         "",
@@ -159,6 +177,8 @@ def show_phone_result(info):
         f"Type:         {info['type_name']}",
         f"Region:       {info['region']}",
         f"Location:     {info['location']}",
+        f"Latitude:     {lat_str}",
+        f"Longitude:    {lng_str}",
         f"Carrier:      {info['carrier']}",
         f"Timezone:     {info['timezone']}",
         "",
@@ -167,13 +187,29 @@ def show_phone_result(info):
         f"E.164:        {info['format_e164']}",
     ]
     phone_results_frame.insert("end", "\n".join(lines))
+    # Update map: set position and show marker for number location
+    if lat is not None and lng is not None:
+        phone_map_widget.set_position(lat, lng)
+        phone_map_widget.set_zoom(10)
+        if phone_marker_ref[0] is not None:
+            try:
+                phone_marker_ref[0].delete()
+            except Exception:
+                pass
+        phone_marker_ref[0] = phone_map_widget.set_marker(lat, lng, text=info.get("location", "Number location"))
 
 
 def clear_phone_results():
     phone_results_frame.configure(state="normal")
     phone_results_frame.delete("1.0", "end")
-    phone_results_frame.insert("end", "Results will appear here after scanning.\nUse E.164 format (e.g. +1234567890) for best results.")
+    phone_results_frame.insert("end", "Results will appear here after scanning.\nUse E.164 format (e.g. +1234567890) for best results.\n\nLocation (lat/long) will appear on the map.")
     phone_status.configure(text="Enter a number and click Scan number.", text_color=COLORS["text_dim"])
+    if phone_marker_ref[0] is not None:
+        try:
+            phone_marker_ref[0].delete()
+        except Exception:
+            pass
+        phone_marker_ref[0] = None
 
 
 # ---------------------------------------------------------------------------
@@ -411,10 +447,24 @@ CTkButton(phone_btn_row, text="Clear", command=clear_phone_results, fg_color=COL
 phone_status = CTkLabel(phone_tab, text="Enter a number and click Scan number.", font=("Segoe UI", 11), text_color=COLORS["text_dim"])
 phone_status.pack(anchor="w", padx=20, pady=(0, 8))
 
-phone_results_frame = CTkTextbox(phone_tab, fg_color=COLORS["bg_card"], border_width=1, border_color=COLORS["text_dim"],
-                                corner_radius=10, font=("Consolas", 12), text_color=COLORS["text"], wrap="word")
-phone_results_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
-phone_results_frame.insert("end", "Results will appear here after scanning.\nUse E.164 format (e.g. +1234567890) for best results.")
+# Phone tab: results (left) + map (right)
+phone_content = CTkFrame(phone_tab, fg_color="transparent")
+phone_content.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+
+phone_results_frame = CTkTextbox(phone_content, fg_color=COLORS["bg_card"], border_width=1, border_color=COLORS["text_dim"],
+                                 corner_radius=10, font=("Consolas", 12), text_color=COLORS["text"], wrap="word")
+phone_results_frame.pack(side="left", fill="both", expand=True, padx=(0, 12))
+
+phone_marker_ref = [None]  # hold current map marker so we can delete on next scan
+phone_map_frame = CTkFrame(phone_content, fg_color=COLORS["bg_card"], corner_radius=10, border_width=1, border_color=COLORS["text_dim"])
+phone_map_frame.pack(side="right", fill="both", expand=True)
+phone_map_frame.configure(width=380, height=340)
+phone_map_widget = tkintermapview.TkinterMapView(phone_map_frame, width=370, height=330, corner_radius=8)
+phone_map_widget.pack(expand=True, fill="both", padx=4, pady=4)
+phone_map_widget.set_position(20.0, 0.0)
+phone_map_widget.set_zoom(2)
+
+phone_results_frame.insert("end", "Results will appear here after scanning.\nUse E.164 format (e.g. +1234567890) for best results.\n\nLocation (lat/long) will appear on the map.")
 
 # ---------------------------------------------------------------------------
 app.mainloop()
