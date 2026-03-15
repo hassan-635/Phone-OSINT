@@ -1,6 +1,7 @@
 """
 Phone OSINT Tool — Network Scanner & Phone Number Scanner
 """
+import logging
 import tkintermapview
 import ipaddress
 import socket
@@ -9,10 +10,16 @@ import phonenumbers
 from phonenumbers import geocoder as pn_geocoder, carrier as pn_carrier, timezone as pn_timezone
 from win32api import GetSystemMetrics as gsm
 from customtkinter import *
-from scapy.all import IP, TCP, sr1, ICMP, UDP
+from scapy.all import IP, TCP, sr1, ICMP, UDP, conf as scapy_conf
 from scapy.layers.l2 import ARP, Ether, srp
 import requests
 import geocoder
+
+# Suppress Scapy's verbose output and "MAC address not found" warnings in terminal
+logging.getLogger("scapy.runtime").setLevel(logging.ERROR)
+scapy_conf.verb = 0
+import warnings
+warnings.filterwarnings("ignore", message=".*MAC address.*")
 
 # ---------------------------------------------------------------------------
 # App setup
@@ -190,14 +197,14 @@ def get_mac_address(ip):
 
 def get_operating_system(target_ip):
     packet = IP(dst=target_ip) / TCP(dport=80, flags="S")
-    response = sr1(packet, timeout=1)
+    response = sr1(packet, timeout=1, verbose=0)
     if response and response.haslayer(TCP):
         if response[TCP].flags == 0x10:
             return "Linux OS"
         elif response[TCP].flags == 0x04:
             return "Windows/Mac OS"
     packet = IP(dst=target_ip) / ICMP()
-    response = sr1(packet, timeout=2)
+    response = sr1(packet, timeout=2, verbose=0)
     if response:
         ttl_value = response[IP].ttl
         if ttl_value == 128:
