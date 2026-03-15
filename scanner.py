@@ -1,60 +1,176 @@
+"""
+Phone OSINT Tool — Network Scanner & Phone Number Scanner
+"""
 import tkintermapview
 import ipaddress
 import socket
-import folium
-import geocoder
-import requests
+import threading
+import phonenumbers
+from phonenumbers import geocoder as pn_geocoder, carrier as pn_carrier, timezone as pn_timezone
 from win32api import GetSystemMetrics as gsm
 from customtkinter import *
 from scapy.all import IP, TCP, sr1, ICMP, UDP
 from scapy.layers.l2 import ARP, Ether, srp
+import requests
+import geocoder
 
-#___________________________________________________________________________________________________
+# ---------------------------------------------------------------------------
+# App setup
+# ---------------------------------------------------------------------------
 app = CTk()
-app.title("Network Scanner")
+app.title("Phone OSINT — Network & Number Scanner")
 
-width = gsm(0)
-height = gsm(1)
-app.geometry(f"{width-40}x{height-245}")
+WIDTH = gsm(0)
+HEIGHT = gsm(1)
+app.geometry(f"{WIDTH - 40}x{HEIGHT - 120}")
+app.minsize(1000, 600)
 
-#___________________________________________________________________________________________________
+# Modern dark theme
+set_appearance_mode("dark")
+set_default_color_theme("blue")
 
-     
-def count_ip_addresses(ip_range):# count total number of ips in given network
+# Color palette
+COLORS = {
+    "bg_dark": "#1a1b26",
+    "bg_card": "#24283b",
+    "accent": "#7aa2f7",
+    "accent_hover": "#bb9af7",
+    "success": "#9ece6a",
+    "warning": "#e0af68",
+    "error": "#f7768e",
+    "text": "#c0caf5",
+    "text_dim": "#565f89",
+}
+
+app.configure(fg_color=COLORS["bg_dark"])
+
+# ---------------------------------------------------------------------------
+# Phone number scanner logic
+# ---------------------------------------------------------------------------
+def scan_phone_number(number_str, default_region="US"):
+    """Look up phone number: region, carrier, timezone, validation."""
+    result = {}
+    try:
+        parsed = phonenumbers.parse(number_str, default_region)
+        result["valid"] = phonenumbers.is_valid_number(parsed)
+        result["possible"] = phonenumbers.is_possible_number(parsed)
+        result["format_national"] = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.NATIONAL)
+        result["format_international"] = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.INTERNATIONAL)
+        result["format_e164"] = phonenumbers.format_number(parsed, phonenumbers.PhoneNumberFormat.E164)
+        result["region"] = phonenumbers.region_code_for_number(parsed)
+        result["number_type"] = phonenumbers.number_type(parsed)
+        type_names = {
+            phonenumbers.PhoneNumberType.FIXED_LINE: "Fixed line",
+            phonenumbers.PhoneNumberType.MOBILE: "Mobile",
+            phonenumbers.PhoneNumberType.FIXED_LINE_OR_MOBILE: "Fixed or mobile",
+            phonenumbers.PhoneNumberType.TOLL_FREE: "Toll free",
+            phonenumbers.PhoneNumberType.PREMIUM_RATE: "Premium rate",
+            phonenumbers.PhoneNumberType.SHARED_COST: "Shared cost",
+            phonenumbers.PhoneNumberType.VOIP: "VOIP",
+            phonenumbers.PhoneNumberType.PERSONAL_NUMBER: "Personal",
+            phonenumbers.PhoneNumberType.PAGER: "Pager",
+            phonenumbers.PhoneNumberType.UAN: "UAN",
+            phonenumbers.PhoneNumberType.VOICEMAIL: "Voicemail",
+            phonenumbers.PhoneNumberType.UNKNOWN: "Unknown",
+        }
+        result["type_name"] = type_names.get(result["number_type"], "Unknown")
+        try:
+            result["location"] = pn_geocoder.description_for_number(parsed, "en") or "—"
+        except Exception:
+            result["location"] = "—"
+        try:
+            result["carrier"] = pn_carrier.name_for_number(parsed, "en") or "—"
+        except Exception:
+            result["carrier"] = "—"
+        try:
+            tz = pn_timezone.time_zones_for_number(parsed)
+            result["timezone"] = ", ".join(tz) if tz else "—"
+        except Exception:
+            result["timezone"] = "—"
+        return result
+    except phonenumbers.NumberParseException as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def run_phone_scan():
+    num_input = phone_entry.get().strip()
+    if not num_input:
+        phone_status.configure(text="Enter a phone number (e.g. +1234567890)", text_color=COLORS["warning"])
+        return
+    phone_status.configure(text="Scanning…", text_color=COLORS["accent"])
+    phone_results_frame.configure(state="normal")
+    phone_results_frame.delete("1.0", "end")
+
+    def do_scan():
+        default_region = phone_region_entry.get().strip() or "US"
+        info = scan_phone_number(num_input, default_region)
+        app.after(0, lambda: show_phone_result(info))
+
+    threading.Thread(target=do_scan, daemon=True).start()
+
+
+def show_phone_result(info):
+    phone_results_frame.configure(state="normal")
+    phone_results_frame.delete("1.0", "end")
+    if "error" in info:
+        phone_status.configure(text="Error: " + info["error"], text_color=COLORS["error"])
+        phone_results_frame.insert("end", f"Parse error: {info['error']}\n")
+        return
+    phone_status.configure(text="Scan complete", text_color=COLORS["success"])
+    lines = [
+        f"Valid:        {info['valid']}",
+        f"Possible:     {info['possible']}",
+        f"Type:         {info['type_name']}",
+        f"Region:       {info['region']}",
+        f"Location:     {info['location']}",
+        f"Carrier:      {info['carrier']}",
+        f"Timezone:     {info['timezone']}",
+        "",
+        f"National:     {info['format_national']}",
+        f"International: {info['format_international']}",
+        f"E.164:        {info['format_e164']}",
+    ]
+    phone_results_frame.insert("end", "\n".join(lines))
+
+
+def clear_phone_results():
+    phone_results_frame.configure(state="normal")
+    phone_results_frame.delete("1.0", "end")
+    phone_results_frame.insert("end", "Results will appear here after scanning.\nUse E.164 format (e.g. +1234567890) for best results.")
+    phone_status.configure(text="Enter a number and click Scan number.", text_color=COLORS["text_dim"])
+
+
+# ---------------------------------------------------------------------------
+# Network scanner logic
+# ---------------------------------------------------------------------------
+def count_ip_addresses(ip_range):
     network = ipaddress.ip_network(ip_range, strict=False)
-    total_ips = network.num_addresses
-    return total_ips
+    return network.num_addresses
+
 
 def get_mac_address(ip):
     arp = ARP(pdst=ip)
     ether = Ether(dst="ff:ff:ff:ff:ff:ff")
-    packet = ether/arp
-
+    packet = ether / arp
     result = srp(packet, timeout=1, verbose=0)[0]
     for sent, received in result:
         if received.psrc == ip:
             return received.hwsrc
     return None
 
-def get_operating_system(target_ip):
-    packet = IP(dst = target_ip) / TCP(dport = 80, flags = "S")
-    response = sr1(packet, timeout=1)
-    if response:
-        if response.haslayer(TCP):
-            if response[TCP].flags == 0x10: #ack flag
-                return "Linux OS"
-            elif response[TCP].flags == 0x04:# rst flag
-                return "Window/Mac OS"
-            else:
-                print(f"Unexpected TCP flags for {target_ip}: {response[TCP].flags}")
-        else:
-            print(f"No TCP layer in response from {target_ip}.")
-    else:
-        print(f"No TCP response from {target_ip}. Trying ICMP...")
 
+def get_operating_system(target_ip):
+    packet = IP(dst=target_ip) / TCP(dport=80, flags="S")
+    response = sr1(packet, timeout=1)
+    if response and response.haslayer(TCP):
+        if response[TCP].flags == 0x10:
+            return "Linux OS"
+        elif response[TCP].flags == 0x04:
+            return "Windows/Mac OS"
     packet = IP(dst=target_ip) / ICMP()
     response = sr1(packet, timeout=2)
-
     if response:
         ttl_value = response[IP].ttl
         if ttl_value == 128:
@@ -63,23 +179,19 @@ def get_operating_system(target_ip):
             return "Linux OS"
         elif ttl_value == 255:
             return "macOS"
-        else:
-            print(f"Unknown TTL value for {target_ip}: {ttl_value}")
-            return "Unknown OS"
-    else:
-        print(f"No ICMP response from {target_ip}.")
         return "Unknown OS"
-    
-    
-def get_traceroute(destination_ip, max_hops = 30, timeout = 1):
+    return "Unknown OS"
+
+
+def get_traceroute(destination_ip, max_hops=30, timeout=1):
     port = 33434
     ttl = 1
+    ttl_list = []
     while True:
-        ip_packet = IP(dst = destination_ip, ttl=ttl)
-        udp_packet = UDP(dport = port)
+        ip_packet = IP(dst=destination_ip, ttl=ttl)
+        udp_packet = UDP(dport=port)
         packet = ip_packet / udp_packet
-        reply = sr1(packet, verbose=0, timeout = timeout)
-        ttl_list = []
+        reply = sr1(packet, verbose=0, timeout=timeout)
         if reply is None:
             ttl_list.append(f"{ttl}\t*")
         elif reply.type == 3:
@@ -87,207 +199,184 @@ def get_traceroute(destination_ip, max_hops = 30, timeout = 1):
             break
         else:
             ttl_list.append(str(reply.src))
-    
         ttl += 1
-        if ttl>max_hops:
+        if ttl > max_hops:
             ttl_list.append("Max hops reached")
             break
-    return ttl_list    
+    return ttl_list
 
-def get_open_ports(target_ip):
+
+def get_open_ports(target_ip, ports_range=(78, 82)):
     open_ports = []
-    for port in range(78, 82):
+    for port in range(ports_range[0], ports_range[1]):
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(1)
         try:
-            result = s.connect_ex((target_ip, port))
-            if result == 0:
+            if s.connect_ex((target_ip, port)) == 0:
                 open_ports.append(port)
-        except Exception as e:
-            print(f"Error Scaning port {port} : {e}")
+        except Exception:
+            pass
         finally:
             s.close()
-    return open_ports    
+    return open_ports
 
 
-        
+def clear_network_results():
+    for w in network_table_children:
+        try:
+            w.destroy()
+        except Exception:
+            pass
+    network_table_children.clear()
+    network_status.configure(text="Results cleared. Enter IP range and scan.", text_color=COLORS["text_dim"])
+
 
 def click_scan_button():
-    ips = []
-    mac_addrs = []
-    os = []
-    traceroutes = []
-    open_ports = []
-    network_info = {}
-    
-    ip_range = entry.get()
-    network = ipaddress.ip_network(ip_range, strict=False)
-    total_ips = count_ip_addresses(ip_range)
-    print("total number of ips ", total_ips)
-    response = requests.get(f"https://api.ipify.org/?format=json")
-    data = response.json()
-    public_ip = data.get("ip")
-    print(public_ip)
-    print(type(public_ip))
-    
-    g=geocoder.ip(public_ip)
-    lat, long = g.latlng
-    print("latitude : ", lat)
-    print("longitude : ", long)
-    
-    map_widget.set_position(lat, long)
-    #folium.Circle([lat, long], radius=50).add_to(map_widget)
+    ip_range = network_entry.get().strip()
+    if not ip_range:
+        network_status.configure(text="Enter an IP range (e.g. 192.168.1.0/24)", text_color=COLORS["warning"])
+        return
+    try:
+        network = ipaddress.ip_network(ip_range, strict=False)
+    except ValueError:
+        network_status.configure(text="Invalid IP range.", text_color=COLORS["error"])
+        return
+
+    # Clear previous rows (keep header)
+    clear_network_results()
+    network_status.configure(text="Scanning network… (this may take a while)", text_color=COLORS["accent"])
+
+    def do_scan():
+        try:
+            public_ip = None
+            try:
+                r = requests.get("https://api.ipify.org/?format=json", timeout=5)
+                public_ip = r.json().get("ip")
+            except Exception:
+                pass
+            if public_ip:
+                g = geocoder.ip(public_ip)
+                if g.latlng:
+                    lat, lng = g.latlng
+                    app.after(0, lambda: map_widget.set_position(lat, lng))
+            ips, macs, os_list, traceroutes, open_ports = [], [], [], [], []
+            for ip in list(network.hosts())[:50]:  # limit to first 50 hosts
+                ip_str = str(ip)
+                macs.append(get_mac_address(ip_str))
+                ips.append(ip_str)
+                os_list.append(get_operating_system(ip_str))
+                traceroutes.append(get_traceroute(ip_str))
+                open_ports.append(get_open_ports(ip_str))
+            app.after(0, lambda: show_network_results(ips, macs, os_list, traceroutes, open_ports))
+        except Exception as e:
+            app.after(0, lambda: network_status.configure(text=f"Error: {e}", text_color=COLORS["error"]))
+
+    threading.Thread(target=do_scan, daemon=True).start()
 
 
-    
-   
-    for ip in network:
-        mac = get_mac_address(str(ip))
-        ips.append(str(ip))
-        mac_addrs.append(mac)
-        operating_system = get_operating_system(str(ip))
-        os.append(operating_system)
-        tr = get_traceroute(str(ip))
-        traceroutes.append(tr)
-        op = get_open_ports(str(ip))
-        open_ports.append(op)
-        
-        
-        
+def show_network_results(ips, mac_addrs, os_list, traceroutes, open_ports):
+    network_status.configure(text=f"Found {len(ips)} host(s)", text_color=COLORS["success"])
+    start_row = 1
     for i in range(len(ips)):
-        print(f"IP: {ips[i]} => MAC: {mac_addrs[i]} => OS : {os[i]} => open ports : {open_ports[i]}")
-        
-    for i in range(len(ips)):
-        label_ports = CTkLabel(sec2, text=", ".join(map(str, open_ports[i])) if open_ports[i] else "None")
-        label_ip = CTkLabel(sec2, text=ips[i])
-        label_mac = CTkLabel(sec2, text=mac_addrs[i] if mac_addrs[i] else "N/A")
-        label_traceroute = CTkLabel(sec2, text=", ".join(traceroutes[i]) if traceroutes[i] else "No route")
-        label_os = CTkLabel(sec2, text=os[i])
-        label_ports.grid(row=i+1, column=0, padx=10, pady=5)
-        label_ip.grid(row=i+1, column=1, padx=10, pady=5)
-        label_mac.grid(row=i+1, column=2, padx=10, pady=5)
-        label_traceroute.grid(row=i+1, column=3, padx=10, pady=5)
-        label_os.grid(row=i+1, column=4, padx=10, pady=5)
-        
-    sec2.update_idletasks()
+        r = start_row + i
+        lab_ports = CTkLabel(network_sec, text=", ".join(map(str, open_ports[i])) if open_ports[i] else "—",
+                             text_color=COLORS["text"], font=("Consolas", 11))
+        lab_ip = CTkLabel(network_sec, text=ips[i], text_color=COLORS["text"], font=("Consolas", 11))
+        lab_mac = CTkLabel(network_sec, text=mac_addrs[i] or "N/A", text_color=COLORS["text"], font=("Consolas", 11))
+        lab_tr = CTkLabel(network_sec, text=", ".join(traceroutes[i][:3]) + ("…" if len(traceroutes[i]) > 3 else "") if traceroutes[i] else "—",
+                          text_color=COLORS["text"], font=("Consolas", 10))
+        lab_os = CTkLabel(network_sec, text=os_list[i], text_color=COLORS["text"], font=("Consolas", 11))
+        for col, w in enumerate([lab_ports, lab_ip, lab_mac, lab_tr, lab_os]):
+            w.grid(row=r, column=col, padx=8, pady=4, sticky="w")
+        network_table_children.extend([lab_ports, lab_ip, lab_mac, lab_tr, lab_os])
+    network_sec.update_idletasks()
 
 
+# ---------------------------------------------------------------------------
+# Main UI — Tabbed layout
+# ---------------------------------------------------------------------------
+tabview = CTkTabview(app, fg_color=COLORS["bg_card"], segmented_button_fg_color=COLORS["bg_dark"],
+                     segmented_button_selected_color=COLORS["accent"], segmented_button_selected_hover_color=COLORS["accent_hover"],
+                     text_color=COLORS["text"], corner_radius=10)
+tabview.pack(fill="both", expand=True, padx=16, pady=16)
+tabview.add("Network Scanner")
+tabview.add("Phone Number Scanner")
 
+# -------- Network Scanner tab --------
+net_tab = tabview.tab("Network Scanner")
+net_tab.configure(fg_color=COLORS["bg_dark"])
 
-#___________________________________________________________________________________________________
+# Top: input card
+net_input_frame = CTkFrame(net_tab, fg_color=COLORS["bg_card"], corner_radius=10, border_width=1, border_color=COLORS["text_dim"])
+net_input_frame.pack(fill="x", padx=20, pady=(20, 12))
 
-# section 1 in which ip entry is done and scan button is included
+CTkLabel(net_input_frame, text="IP range", font=("Segoe UI", 12, "bold"), text_color=COLORS["text"]).pack(anchor="w", padx=16, pady=(12, 4))
+network_entry = CTkEntry(net_input_frame, placeholder_text="e.g. 192.168.1.0/24", height=36, font=("Consolas", 12),
+                         fg_color=COLORS["bg_dark"], border_color=COLORS["accent"])
+network_entry.pack(fill="x", padx=16, pady=(0, 12))
 
-sec1 = CTkFrame(master = app, 
-                fg_color = "#8D6F3A", 
-                border_color = "#FFCC70", 
-                border_width = 2)
+btn_frame = CTkFrame(net_input_frame, fg_color="transparent")
+btn_frame.pack(fill="x", padx=16, pady=(0, 12))
+scan_btn = CTkButton(btn_frame, text="Scan network", command=click_scan_button, fg_color=COLORS["accent"],
+                     hover_color=COLORS["accent_hover"], height=36, font=("Segoe UI", 12, "bold"))
+scan_btn.pack(side="left", padx=(0, 8))
+CTkButton(btn_frame, text="Clear results", command=clear_network_results, fg_color=COLORS["text_dim"],
+          hover_color=COLORS["error"], height=36).pack(side="left")
 
-sec1.place(relx=0.0, 
-           rely=0.0, 
-           anchor='nw'
-           , x=450, 
-           y=20)
+network_status = CTkLabel(net_tab, text="Enter IP range and click Scan.", font=("Segoe UI", 11), text_color=COLORS["text_dim"])
+network_status.pack(anchor="w", padx=20, pady=(0, 8))
 
+# Table + map row
+content_frame = CTkFrame(net_tab, fg_color="transparent")
+content_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
 
-label = CTkLabel(
-    sec1,
-    text="Enter IP Range (e.g., 192.168.1.1/24):",
-    text_color="#FFFFFF",  # White text color 
-    font=("Arial", 14, "bold")  # Bold font 
-)
+network_sec = CTkScrollableFrame(content_frame, fg_color=COLORS["bg_card"], corner_radius=10, border_width=1, border_color=COLORS["text_dim"],
+                                 scrollbar_button_color=COLORS["accent"], scrollbar_button_hover_color=COLORS["accent_hover"])
+network_sec.pack(side="left", fill="both", expand=True, padx=(0, 12))
+network_sec.configure(width=520, height=400)
 
-entry = CTkEntry(
-    sec1,
-    placeholder_text="Enter IP address",
-    fg_color="#FFFFFF",  # White background 
-    text_color="#000000",  # Black text color
-    border_color="#8D6F3A"
-)
+network_table_children = []
+headers_net = ["Ports", "IP", "MAC", "Traceroute", "OS"]
+for c, h in enumerate(headers_net):
+    CTkLabel(network_sec, text=h, font=("Segoe UI", 11, "bold"), text_color=COLORS["accent"]).grid(row=0, column=c, padx=8, pady=8, sticky="w")
 
-scan_button = CTkButton(
-    sec1,
-    text="SCAN",
-    command=click_scan_button,
-    fg_color="#FFCC70",  # Light yellow color 
-    text_color="#000000",  # Black text color
-    hover_color="#FFD700",  # Gold color on hover
-    font=("Arial", 12, "bold")  # Bold font for the button
-)
+map_frame = CTkFrame(content_frame, fg_color=COLORS["bg_card"], corner_radius=10, border_width=1, border_color=COLORS["text_dim"])
+map_frame.pack(side="right", fill="both", expand=True)
+map_frame.configure(width=420, height=400)
+map_widget = tkintermapview.TkinterMapView(map_frame, width=410, height=390, corner_radius=8)
+map_widget.pack(expand=True, fill="both", padx=4, pady=4)
+map_widget.set_position(33.66, 73.02)
+map_widget.set_zoom(10)
 
-label.pack(pady=10, padx=10)
-entry.pack(pady=10, padx=10)
-scan_button.pack(pady=10, padx=10)
+# -------- Phone Number Scanner tab --------
+phone_tab = tabview.tab("Phone Number Scanner")
+phone_tab.configure(fg_color=COLORS["bg_dark"])
 
-#__________________________________________________________________________________________________________
+phone_input_frame = CTkFrame(phone_tab, fg_color=COLORS["bg_card"], corner_radius=10, border_width=1, border_color=COLORS["text_dim"])
+phone_input_frame.pack(fill="x", padx=20, pady=(20, 12))
 
-# sction 2 table of the output
+CTkLabel(phone_input_frame, text="Phone number (with country code)", font=("Segoe UI", 12, "bold"), text_color=COLORS["text"]).pack(anchor="w", padx=16, pady=(12, 4))
+phone_entry = CTkEntry(phone_input_frame, placeholder_text="e.g. +1 234 567 8900", height=36, font=("Consolas", 12),
+                       fg_color=COLORS["bg_dark"], border_color=COLORS["accent"])
+phone_entry.pack(fill="x", padx=16, pady=(0, 6))
+CTkLabel(phone_input_frame, text="Default region (if no +code): e.g. US, GB", font=("Segoe UI", 10), text_color=COLORS["text_dim"]).pack(anchor="w", padx=16, pady=(0, 2))
+phone_region_entry = CTkEntry(phone_input_frame, placeholder_text="US", height=32, width=80, font=("Consolas", 11),
+                              fg_color=COLORS["bg_dark"], border_color=COLORS["text_dim"])
+phone_region_entry.pack(anchor="w", padx=16, pady=(0, 12))
+phone_btn_row = CTkFrame(phone_input_frame, fg_color="transparent")
+phone_btn_row.pack(anchor="w", padx=16, pady=(0, 12))
+CTkButton(phone_btn_row, text="Scan number", command=run_phone_scan, fg_color=COLORS["accent"],
+          hover_color=COLORS["accent_hover"], height=36, font=("Segoe UI", 12, "bold")).pack(side="left", padx=(0, 8))
+CTkButton(phone_btn_row, text="Clear", command=clear_phone_results, fg_color=COLORS["text_dim"],
+          hover_color=COLORS["error"], height=36).pack(side="left")
 
-sec2 = CTkScrollableFrame(master=app, 
-                          fg_color = "#8D6F3A", 
-                          border_color = "#FFCC70", 
-                          border_width = 2, 
-                          orientation="vertical", 
-                          scrollbar_button_color='#FFCC70',
-                          scrollbar_button_hover_color='#FFD700')
+phone_status = CTkLabel(phone_tab, text="Enter a number and click Scan number.", font=("Segoe UI", 11), text_color=COLORS["text_dim"])
+phone_status.pack(anchor="w", padx=20, pady=(0, 8))
 
-sec2.place(relx=0.0, 
-           rely=0.0, 
-           anchor='nw', 
-           x=20, 
-           y=sec1.winfo_height() + 30)
+phone_results_frame = CTkTextbox(phone_tab, fg_color=COLORS["bg_card"], border_width=1, border_color=COLORS["text_dim"],
+                                corner_radius=10, font=("Consolas", 12), text_color=COLORS["text"], wrap="word")
+phone_results_frame.pack(fill="both", expand=True, padx=20, pady=(0, 20))
+phone_results_frame.insert("end", "Results will appear here after scanning.\nUse E.164 format (e.g. +1234567890) for best results.")
 
-
-columns = ["Open Ports |", "IP Address |", "MAC Address |", "Traceroute IP's |", "OS"]
-
-for col, head in enumerate(columns):
-    
-    label = CTkLabel(sec2, 
-                     text=head, 
-                     font = ("Arial", 12, "bold"))
-    
-    label.grid(row=0, column = col, padx=10, pady=5)
-    
-sec2.update_idletasks()
-    
-scan_result = []
-
-for row, entry in enumerate(scan_result, start=1):
-   for col, value in enumerate(entry):
-      label = CTkLabel(sec2, text=value)
-      label.grid(row=row, column=col, padx=20, pady=5)
-      
-      
-sec2.update_idletasks()
-sec2.configure(width=540, height=550)      
-
-#________________________________________________________________________________________________________________
-
-# section 3 map
-
-sec3 = CTkFrame(master=app, 
-                fg_color = "#8D6F3A", 
-                border_color = "#FFCC70", 
-                border_width = 2)
-
-sec3.place(relx=0.0, 
-           rely=0.0, 
-           anchor='nw', 
-           x=sec2.winfo_width() + 400, 
-           y=sec1.winfo_height() + 30)
-
-sec3.configure(width=620, height=565)  
-
-map_widget = tkintermapview.TkinterMapView(sec3, 
-                                           width=610, 
-                                           height=570, 
-                                           corner_radius=3)
-
-map_widget.pack(expand=False)
-
-map_widget.set_position(33.6612224, 73.0227223)  # Coordinates for Norway
-map_widget.set_zoom(16)  # Set zoom level
-
-#___________________________________________________________________________________________________________________
-
+# ---------------------------------------------------------------------------
 app.mainloop()
