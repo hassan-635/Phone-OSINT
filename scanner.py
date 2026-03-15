@@ -269,7 +269,8 @@ def click_scan_button():
                 open_ports.append(get_open_ports(ip_str))
             app.after(0, lambda: show_network_results(ips, macs, os_list, traceroutes, open_ports))
         except Exception as e:
-            app.after(0, lambda: network_status.configure(text=f"Error: {e}", text_color=COLORS["error"]))
+            err_msg = str(e)
+            app.after(0, lambda msg=err_msg: network_status.configure(text=f"Error: {msg}", text_color=COLORS["error"]))
 
     threading.Thread(target=do_scan, daemon=True).start()
 
